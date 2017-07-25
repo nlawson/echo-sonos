@@ -2,6 +2,7 @@
 'use strict';
 
 var sonosProxyFactory = require('./sonosProxy/sonosProxyFactory');
+var AWS = require('aws-sdk');
 var sonosProxy = null;
 var dynamodb = null;
 
@@ -21,10 +22,37 @@ var STATE_RESPONSES = [
     "$currentTitle by $currentArtist"
 ];
 
+var states = {
+    NORMALMODE:       '_NORMALMODE',
+    INTERACTIVEMODE:  '_INTERACTIVEMODE'
+};
+var currentState = states.NORMALMODE;
+
 EchoSonos.prototype = Object.create(AlexaSkill.prototype);
 EchoSonos.prototype.constructor = EchoSonos;
 
+EchoSonos.prototype.onLaunch = function (launchRequest, session, response) {
+    console.log("launchHandler invoked");
+    loadCurrentRoomAndService('DefaultEcho', defaultRoom, function(room, service) {
+    	response.ask(`The current room is the ${room} and the current music service is ${service}. What would you like Sonos to do?`,'What would you like Sonos to do?');
+    });
+}
+
+EchoSonos.prototype.interactiveMode = function () {
+    currentState = states.INTERACTIVEMODE;
+}
+
+EchoSonos.prototype.normalMode = function () {
+    currentState = states.NORMALMODE;
+}
+
 EchoSonos.prototype.intentHandlers = {
+
+    FinishedIntent: function (intent, session, response) {
+        console.log("FinishedIntent received");
+	    currentState = states.NORMALMODE;
+        response.tell("OK");
+    },
 
     AlbumIntent: function (intent, session, response) {
         console.log("AlbumIntent received");
@@ -129,7 +157,7 @@ EchoSonos.prototype.intentHandlers = {
            response.tell("This command does not work unless advanced mode is turned on");
         } else {
             changeCurrent('DefaultEcho', intent.slots.Room.value, '', function() {
-                response.tell("OK");
+                quickResponse(response, "OK");
             });
         }
     },
@@ -140,7 +168,7 @@ EchoSonos.prototype.intentHandlers = {
             response.tell("This command does not work unless advanced mode is turned on");
         } else {
             changeCurrent('DefaultEcho', '', intent.slots.Service.value, function() {
-                response.tell("OK");
+                quickResponse(response, "OK");
             });
         }
     },
@@ -151,7 +179,7 @@ EchoSonos.prototype.intentHandlers = {
             response.tell("This command does not work unless advanced mode is turned on");
         } else {
             changeCurrent('DefaultEcho', intent.slots.Room.value, intent.slots.Service.value, function() {
-                response.tell("OK");
+                quickResponse(response, "OK");
             });
         }
     },
@@ -234,9 +262,9 @@ EchoSonos.prototype.intentHandlers = {
                  var responseJson = JSON.parse(data);
                  var randResponse = Math.floor(Math.random() * STATE_RESPONSES.length);
                  var responseText = STATE_RESPONSES[randResponse].replace("$currentTitle", responseJson.currentTrack.title).replace("$currentArtist", responseJson.currentTrack.artist);
-                 response.tell(responseText);
+                 quickResponse(response, responseText);
             }).catch((error) => {
-                response.tell(error.message);
+                quickResponse(response, error.message);
             });
         });
     },
@@ -307,7 +335,7 @@ EchoSonos.prototype.intentHandlers = {
         console.log("PlayInRoomIntent received");
 
         if (options.defaultLinein === '' || !options.defaultLinein) {
-            response.tell("This command does not work unless you set default Linein");
+            quickResponse(response, "This command does not work unless you set default Linein");
         }
 
         var promise = sonosProxy.lineIn(intent.slots.Room.value, options.defaultLinein);
@@ -356,7 +384,7 @@ function moreMusicHandler(room, service, type, response) {
 
             musicHandler(room, service, type, content, response);
         } else {
-            response.tell("The current artist is not identified");
+            quickResponse(response, "The current artist is not identified");
         }
     });
 
@@ -681,9 +709,22 @@ function findCoordinatorForRoom(responseJson, room) {
     }
 }
 
+function quickResponse(response, message) {
+    if (currentState == states.INTERACTIVEMODE) {
+        response.ask('What would you like to do next?',"What would you like to do next? You can just say I'm finished if you have nothing more to do");
+    } else {
+        response.tell(message || "OK");
+    }
+}
+
 function handleResponse(promise, response, success) {
-    promise.then(() => response.tell(success || "OK"))
+    if (currentState == states.INTERACTIVEMODE) {
+        promise.then(() => response.ask('What would you like to do next?',"What would you like to do next? You can just say I'm finished if you have nothing more to do"))
            .catch((error) => response.tell("The Lambda service encountered an error: " + error.message));
+    } else {
+        promise.then(() => response.tell(success || "OK"))
+           .catch((error) => response.tell("The Lambda service encountered an error: " + error.message));
+    }
 }
 
 function getUrl(options) {
@@ -702,10 +743,10 @@ exports.handler = function (event, context) {
         var accountId = arn.substring(actLoc,arn.indexOf(':',actLoc));
         var baseSqsUrl = "https://sqs." + region + ".amazonaws.com/" + accountId;
 
-        sonosProxy = sonosProxyFactory.get(baseSqsUrl, options.useSQS);
+        sonosProxy = sonosProxyFactory.get(baseSqsUrl, options);
     }
     else {
-        sonosProxy = sonosProxyFactory.get(getUrl(options), options.useSQS);
+        sonosProxy = sonosProxyFactory.get(getUrl(options), options);
     }
     
 
